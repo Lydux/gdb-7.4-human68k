@@ -39,7 +39,6 @@ static char *hudsonbug_regnames[] = {
 };
 
 struct hudsonbug_upload_context {
-  unsigned long addr;		/* The address to start uploading */
   unsigned long count;		/* Uploaded data count */
 };
 
@@ -58,15 +57,16 @@ hudsonbug_load_section (bfd *abfd, asection *s, void *obj)
 {
   struct hudsonbug_upload_context *ctx =
     (struct hudsonbug_upload_context *) obj;
+  enum bfd_endian byte_order = gdbarch_byte_order (target_gdbarch);
   bfd_size_type section_size;
   bfd_vma section_base;
-  unsigned short buf;
+  short buf, val;
   int i;
 
   if (s->flags & SEC_LOAD)
     {
       section_size = bfd_section_size (abfd, s);
-      section_base = bfd_section_lma (abfd, s) + (bfd_vma) ctx->addr;
+      section_base = bfd_section_lma (abfd, s);
 
       ctx->count += section_size;
 
@@ -85,8 +85,9 @@ hudsonbug_load_section (bfd *abfd, asection *s, void *obj)
       for (i = 0; i < section_size; i += 2)
         {
           monitor_expect (":", NULL, 0);
-	  bfd_get_section_contents (abfd, s, (char *) &buf, i, 2);
-	  monitor_printf ("%x\n", buf);
+	  bfd_get_section_contents (abfd, s, (char *) &val, i, 2);
+	  store_unsigned_integer ((gdb_byte *) &buf, 2, byte_order, val);
+	  monitor_printf ("%04x\r", buf);
 	}
 
       monitor_expect (":", NULL, 0);
@@ -104,18 +105,16 @@ hudsonbug_upload_command (char *args, int from_tty)
 {
   char **argv;
   char *filename;
-  long addr;
   bfd *abfd;
+  unsigned long addr;
   struct hudsonbug_upload_context ctx;
 
   argv = gdb_buildargv (args);
 
-  filename = argv[0];
-  /* Base address (raw binary/xfile) */
-  addr = strtoul (argv[1], &argv[2], 16);
-
-  if (filename == NULL || filename[0] == 0)
+  if (args == NULL || args[0] == 0)
     filename = get_exec_file (1);	/* Current executable */
+  else
+    filename = argv[0];
 
   abfd = bfd_openr (filename, 0);
   if (!abfd)
@@ -123,12 +122,18 @@ hudsonbug_upload_command (char *args, int from_tty)
   if (bfd_check_format (abfd, bfd_object) == 0)
     error (_("File is not an object file."));
 
-  ctx.addr = addr;
   ctx.count = 0;
 
   bfd_map_over_sections (abfd, hudsonbug_load_section, &ctx);
 
-  /* TODO : Set PC ? */
+  /* Set PC */
+  addr = bfd_get_start_address (abfd);
+
+  printf_filtered ("Start address 0x%lx\n", addr);
+
+  if (exec_bfd)
+    regcache_write_pc (get_current_regcache (), addr);
+
 }
 
 /* Output :
